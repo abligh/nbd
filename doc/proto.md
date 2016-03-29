@@ -195,15 +195,145 @@ C: 64 bits, offset (unsigned)
 C: 32 bits, length (unsigned)  
 C: (*length* bytes of data if the request is of type `NBD_CMD_WRITE`)
 
-The server replies with:
+Replies take one of two forms. They may either be structured replies,
+or unstructured replies. The server MUST NOT send structured replies
+unless it has negotiated structured replies with the client using
+`NBD_OPT_STUCTURED_REPLIES` (??).
+
+[Option #1: Subject to that, the server may choose whether it sends
+any given reply to any given command as a structured reply or an
+unstructured reply.]
+
+[Option #2: If this option is negotiated, the server MUST send all
+replies as structured replies. If the option is not negotiated, the
+server MUST send all replies as unstructured replies.]
+
+[Option #3: If this option is negotiated, the server MUST send all
+replies to command that support structured replies as structured
+replies (currently `NBD_CMD_READ` only), and all other replies as
+unstructured replies. If the option is not negotiated, the server MUST
+send all replies as unstructured replies.]
+
+Unstructured replies are problematic for error handling within
+`NBD_CMD_READ`, therefore servers SHOULD support structured replies.
+
+#### Unstructured replies
+
+In an unstructured reply, the server replies with:
 
 S: 32 bits, 0x67446698, magic (`NBD_REPLY_MAGIC`)  
 S: 32 bits, error  
 S: 64 bits, handle  
-S: (*length* bytes of data if the request is of type `NBD_CMD_READ`)
+S: (*length* bytes of data if the request is of type `NBD_CMD_READ`)  
 
-Replies need not be sent in the same order as requests (i.e., requests
-may be handled by the server asynchronously).
+#### Structured replies
+
+A structured reply consists of one or more chunks. The server
+MUST send exactly one end chunk (identified by
+the chunk type `NBD_CHUNKTYPE_END`), and this MUST be the final
+chunk within the reply.
+
+Each chunk consists of the following:
+
+S: 32 bits, 0x668e33ef, magic (`NBD_STRUCTURED_REPLY_MAGIC`)  
+S: 32 bits, flags (including type)  
+S: 64 bits, handle  
+S: 32 bits, payload length  
+S: (*length* bytes of payload data)  
+
+The flags have the following meanings:
+
+* bits 0-7: `NBD_CHUNKTYPE`, an 8 bit unsigned integer
+* bits 8-31: reserved (server MUST set these to zero)
+
+Possible values of `NBD_CHUNKTYPE` are as follows:
+
+* 0 = `NBD_CHUNKTYPE_END`: the final chunk
+* 1 = `NBD_CHUNKTYPE_DATA`: data that has been read
+* 2 = `NBD_CHUNKTYPE_ZERO`: data that should be considered zero
+
+The format of the payload data for each chunk type is as follows:
+
+##### `NBD_CHUNKTYPE_END`
+
+S: 32 bits, error code or zero for success  
+S: 64 bits, offset of error (if any)  
+
+##### `NBD_CHUNKTYPE_DATA`
+
+S: 64 bits, offset of data  
+S: (*length-8* bytes of data as read)  
+
+##### `NBD_CHUNKTYPE_ZERO`
+
+S: 64 bits, offset of data  
+S: 32 bits, number of zeroes to which this corresponds  
+
+
+Commands that return data (currently `NBD_CMD_READ`) therefore MUST
+return zero or more chunks each of type `NBD_CHUNKTYPE_DATA` or
+`NBD_CHUNKTYPE_ZERO` (collectively 'data chunks') followed
+an `NBD_CHUNKTYPE_END`.
+
+The server MAY split the reply into any non-zero number of data
+chunks (provided each consists of at least one byte) and
+MAY send the data chunks in any order (though the
+`NBD_CHUNKTYPE_END` must be the final chunk). This means the
+client is responsible for reassembling the chunks in the correct
+order.
+
+The server MUST NOT send chunks that overlap. The server
+MUST NOT send chunks whose data exceeds the length
+of data requested (for this purpose counting the data
+within `NBD_CHUNKTYPE_ZERO` as the number of zero bytes
+specified therein). The server MUST, in the case of a successesful
+read send exactly the number of bytes requested (whether
+represented by `NBD_CHUNKTYPE_DATA` or `NBD_CHUNKTYPE_ZERO`).
+The server MUST NOT, in the case of an errored read, send
+more than the number of bytes requested.
+
+In order to avoid the burden of reassembly, the client
+MAY send `NBD_CMD_FLAG_DF`, which instructs the server
+not to fragment the reply. If this flag is set, the server
+MUST send either zero or one data chunks and an `NBD_CHUNKTYPE_END`
+only. Under such circumstances the server MAY error the command
+with `ETOOBIG` if the length read exceeds [65,536 bytes | the
+negotiated maximum fragment size].
+
+If no errors are detected within an operation, the `NBD_CHUNKTYPE_END`
+packet MUST contain an error value of zero and an error offset of
+zero.
+
+If the server detects an error during an operation which it
+is serving with a structured reply, it MUST complete
+the transmission of the errored data chunk(s) if transmission
+has started (by padding the chunk(s) concerned with data
+which MUST be zero), after which zero or more further
+data chunks may be sent, followed by an `NBD_CHUNKTYPE_END`
+chunk. The server MUST either:
+
+* set the offset within `NBD_CHUNKTYPE_END` to the offset of the
+  error, in which case this MUST be within the length requested; or
+* set the offset to 0xffffffff meaning the error occurred at
+  an unidentified place.
+
+If more than one data chunk containing an error has been transmitted
+prior to sending the `NBD_CHUNKTYPE_END`, the server MUST take
+the second option above, to avoid the client assuming that data
+chunks which do not contain the offset marked as errored are
+error-free.
+
+#### Ordering of replies
+
+The server MAY send replies in any order. The order of replies
+need not correpsond to the order of requests, i.e., requests
+may be handled by the server asynchronously). The server MAY
+interleave the chunks relating to a single structured reply
+with chunks relating to structured replies relating to
+a different handle, or with unstructured replies relating
+to a different handle. Note that there is a constraint on
+the ordering of chunks within a given structured reply as set out
+above; this is a separate issue to the ordering of replies.
 
 ## Values
 
