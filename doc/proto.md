@@ -501,8 +501,8 @@ The following request types exist:
     extension was negotiated.
 
     If structured replies were not negotiated, the server MUST reply
-    with a simple reply header, followed immediately by len bytes of
-    data, read from offset bytes into the file, unless an error
+    with a simple reply header, followed immediately by *length* bytes
+    of data, read from *offset* bytes into the file, unless an error
     condition has occurred.
 
     If an error occurs, the server SHOULD set the appropriate error
