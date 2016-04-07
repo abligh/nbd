@@ -342,6 +342,7 @@ The field has the following format:
   experimental `WRITE_ZEROES` extension; see below.
 - bit 7, `NBD_FLAG_SEND_DF`: defined by the experimental `STRUCTURED_REPLY`
   extension; see below.
+- bit 8, `NBD_FLAG_SEND_CLOSE`: exposes support for `NBD_CMD_CLOSE`.
 
 Clients SHOULD ignore unknown flags.
 
@@ -608,6 +609,12 @@ The following request types exist:
     The values of the length and offset fields in a disconnect request
     are not defined.
 
+    A client SHOULD NOT send `NBD_CMD_DISC` if `NBD_FLAG_SEND_CLOSE`
+    is set in the transmission flags field, but SHOULD use
+    `NBD_CMD_CLOSE` instead; in such circumstances, if the client
+    cannot wait for inflight requests to complete it SHOULD simply
+    disconnect.
+
 * `NBD_CMD_FLUSH` (3)
 
     A flush request; a write barrier. The server MUST NOT send a
@@ -637,6 +644,71 @@ The following request types exist:
 * `NBD_CMD_WRITE_ZEROES` (6)
 
     Defined by the experimental `WRITE_ZEROES` extension; see below.
+
+* `NBD_CMD_CLOSE` (7)
+
+    A close request. The server MUST handle all outstanding
+    requests (there should be none by the spec), and then MUST send a
+    response. The response MAY include an error if some aspect of
+    closing failed (e.g. flushing to permanent storage) but the
+    connection MUST be considered closed irrespective of the
+    error status of the command. The server MUST NOT send anything after
+    sending a response to an `NBD_CMD_CLOSE`.
+
+    A server SHOULD treat the receipt of an `NBD_CMD_CLOSE` like
+    a `NBD_CMD_FLUSH` and MUST do so if `NBD_FLAG_SEND_FLUSH`
+    was set in the transmission fields. Under such circumstances
+    it MUST NOT send a reply until all write requests it received
+    prior to receipt of the `NBD_CMD_FLUSH` have reached permanent
+    storage. The slightly different semantic is due to the requirement
+    that the server MUST handle outstanding requests first.
+
+    If the server receives `NBD_CMD_CLOSE` it MUST treat
+    the close as a safe close (i.e. one where all operations have
+    been performed) at the point where the request is received
+    (this relies on the client complying to the requirement of
+    no outstanding requests).
+
+    A client MUST wait until there are no outstanding requests
+    before sending an `NBD_CMD_CLOSE`, and following this
+    point it MUST treat either the receipt of a non-errored response
+    or a TCP level disconnect as a safe close. Receipt of an errored
+    response indicates a non-safe close.
+
+    A disconnect in any other circumstances MUST be considered an
+    unsafe close, except for `NBD_CMD_DISC` sent or received without
+    outstanding requests, which the server or client MAY treat
+    as it wishes.
+
+    A client MUST NOT send anything to the server after sending an
+    `NBD_CMD_CLOSE` command. On receipt of a response to a
+    `NBD_CMD_CLOSE` (whether errored or not), the client MUST close the
+    connection.
+
+    The server MAY close the connection after sending a response
+    provided it has first ensured all network traffic has been
+    flushed to the socket (especially important if using TLS).
+
+    The length, offset and flags fields in an `NBD_CMD_CLOSE` request
+    MUST all be zero.
+
+    A client MUST NOT send a `NBD_CMD_CLOSE` unless
+    `NBD_FLAG_SEND_CLOSE` was set in the transmission flags
+    field.
+
+    The rationale for `NBD_CMD_CLOSE` is as follows. When a
+    client sends an `NBD_CMD_DISC`, it does not know whether it
+    has been processed or not, because the server is not
+    required to reply; hence if it sees a disconnection it
+    cannot easily distinguish this from an error. When a client
+    sends an `NBD_CMD_DISC`, it (logically) also wishes to close
+    the connection; clients often do so to avoid the situation
+    where a server never closes the connection. This close often
+    happens before the server has received or processed the
+    `NBD_CMD_DISC`, particularly when TLS is enabled. This
+    extension allows both client and server to be sure a connection
+    has been closed safely and to differentiate TCP level disconnects
+    from closes of other sorts.
 
 * Other requests
 
