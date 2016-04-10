@@ -114,6 +114,21 @@ AC_CHECK_SIZEOF(unsigned long long int)
 AC_STRUCT_DIRENT_D_TYPE
 AC_CHECK_FUNCS([llseek alarm gethostbyname inet_ntoa memset socket strerror strstr mkstemp fdatasync])
 HAVE_FL_PH=no
+AC_ARG_ENABLE(
+  [gnutls],
+  [AS_HELP_STRING([--enable-gnutls],[Build support for GnuTLS])],
+  [
+    if test "x$enableval" = "xyes"]; then
+       AC_CHECK_LIB([gnutls], [gnutls_init], , AC_MSG_ERROR(no GnuTLS library found))
+       AC_DEFINE(WITH_GNUTLS, 1, [Define to 1 if you have and want support GnuTLS])
+       withgnutls=true
+    else
+       withgnutls=false
+    fi
+  ],
+)
+AM_CONDITIONAL([GNUTLS], [test "x$withgnutls" = "xtrue"])
+
 AC_CHECK_FUNC(fallocate,
   [
     AC_CHECK_HEADERS([linux/falloc.h])
