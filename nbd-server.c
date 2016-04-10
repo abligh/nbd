@@ -239,6 +239,9 @@ struct generic_conf {
         gchar *modernaddr;      /**< address of the modern socket */
         gchar *modernport;      /**< port of the modern socket    */
         gchar *unixsock;	/**< file name of the unix domain socket */
+	gchar *certfile;        /**< certificate file             */
+	gchar *keyfile;         /**< key file                     */
+	gchar *cacertfile;      /**< CA certificate file          */
         gint flags;             /**< global flags                 */
 	gint threads;		/**< maximum number of parallel threads we want to run */
 };
@@ -626,6 +629,7 @@ GArray* parse_cfile(gchar* f, struct generic_conf *const genconf, bool expect_ge
 		{ "trim",	FALSE,  PARAM_BOOL,	&(s.flags),		F_TRIM },
 		{ "listenaddr", FALSE,  PARAM_STRING,   &(s.listenaddr),	0 },
 		{ "maxconnections", FALSE, PARAM_INT,	&(s.max_connections),	0 },
+		{ "tlsonly",    FALSE,  PARAM_BOOL,     &(s.flags),             F_TLSONLY },
 	};
 	const int lp_size=sizeof(lp)/sizeof(PARAM);
         struct generic_conf genconftmp;
@@ -639,6 +643,10 @@ GArray* parse_cfile(gchar* f, struct generic_conf *const genconf, bool expect_ge
 		{ "allowlist",  FALSE, PARAM_BOOL,	&(genconftmp.flags),      F_LIST },
 		{ "unixsock",	FALSE, PARAM_STRING,    &(genconftmp.unixsock),   0 },
 		{ "max_threads", FALSE, PARAM_INT,	&(genconftmp.threads),	  0 },
+		{ "certfile",   FALSE, PARAM_STRING,    &(genconftmp.certfile),   0 },
+		{ "keyfile",    FALSE, PARAM_STRING,    &(genconftmp.keyfile),    0 },
+		{ "cacertfile", FALSE, PARAM_STRING,    &(genconftmp.cacertfile), 0 },
+		{ "tlsonly",    FALSE, PARAM_BOOL,      &(genconftmp.flags),      F_TLSONLY },
 	};
 	PARAM* p=gp;
 	int p_size=sizeof(gp)/sizeof(PARAM);

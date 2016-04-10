@@ -141,6 +141,7 @@ typedef enum {
 #define F_TRIM 2048       /**< Whether server wants TRIM (discard) to be sent by the client */
 #define F_FIXED 4096	  /**< Client supports fixed new-style protocol (and can thus send us extra options */
 #define F_TREEFILES 8192	  /**< flag to tell us a file is exported using -t */
+#define F_TLSONLY 16384   /**< Whether export should be TLS only */
 
 /* Functions */
 
