@@ -129,6 +129,10 @@
 #include <winioctl.h>
 #endif
 
+#ifdef WITH_GNUTLS
+#include "crypto-gnutls.h"
+#endif
+
 /** Default position of the config file */
 #ifndef SYSCONFDIR
 #define SYSCONFDIR "/etc"
@@ -245,6 +249,8 @@ struct generic_conf {
         gint flags;             /**< global flags                 */
 	gint threads;		/**< maximum number of parallel threads we want to run */
 };
+
+static pid_t spawn_child();
 
 /**
  * Translate a command name into human readable form
@@ -1256,7 +1262,7 @@ static void send_reply(uint32_t opt, int net, uint32_t reply_type, size_t datasi
 	}
 }
 
-static CLIENT* handle_export_name(uint32_t opt, int net, GArray* servers, uint32_t cflags) {
+static CLIENT* handle_export_name(uint32_t opt, int net, GArray* servers, uint32_t cflags, int tlsfd) {
 	uint32_t namelen;
 	char* name;
 	int i;
@@ -1280,6 +1286,11 @@ static CLIENT* handle_export_name(uint32_t opt, int net, GArray* servers, uint32
 	for(i=0; i<servers->len; i++) {
 		SERVER* serve = &(g_array_index(servers, SERVER, i));
 		if(!strcmp(serve->servename, name)) {
+			if ((tlsfd < 0) && (serve->flags & F_TLSONLY || glob_flags & F_TLSONLY)) {
+				err("Negotiation failed: Attempt to read from TLS only export without TLS");
+				free(name);
+				return NULL;
+			}
 			CLIENT* client = g_new0(CLIENT, 1);
 			client->server = serve;
 			client->exportsize = OFFT_MAX;
@@ -1324,16 +1335,125 @@ static void handle_list(uint32_t opt, int net, GArray* servers, uint32_t cflags)
 	send_reply(opt, net, NBD_REP_ACK, 0, NULL);
 }
 
+static int tlserrout (void *opaque, const char *format, va_list ap) {
+	char buf[1024];
+	if (vsnprintf(buf, 1024, format, ap) < 0)
+		return -1;
+	buf[1023] = 0; // in case it overran the buffer
+	err_nonfatal(buf);
+	return 0;
+}
+
+static void handle_starttls(uint32_t opt, int *net, int *tlsfd, GArray* servers, uint32_t cflags,
+			    struct generic_conf *genconf) {
+	uint32_t len;
+	int i;
+	char buf[1024];
+	char *ptr = buf + sizeof(len);
+	int plainfd[2]; // [0] is used by the proxy, [1] is used by NBD
+#ifdef WITH_GNUTLS
+	tlssession_t *s = NULL;
+	int ret;
+#endif
+	if (read(*net, &len, sizeof(len)) < 0)
+		err("Negotiation failed/8: %m");
+	len = ntohl(len);
+	if (len || (*tlsfd >= 0)) {
+		send_reply(opt, *net, NBD_REP_ERR_INVALID, 0, NULL);
+	}
+
+#ifdef WITH_GNUTLS
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, plainfd) < 0) {
+		send_reply(opt, *net, NBD_REP_ERR_INVALID, 0, NULL);
+		err_nonfatal("Could not make a socketpair");
+	}
+
+	if (!genconf->keyfile || !*genconf->keyfile) {
+		send_reply(opt, *net, NBD_REP_ERR_POLICY, 0, NULL);
+		err_nonfatal("Client tried to negotiate TLS when not configured");
+		return;
+	}
+
+	s = tlssession_new(TRUE,
+			   genconf->keyfile,
+			   genconf->certfile,
+			   genconf->cacertfile,
+			   NULL, // hostname
+			   !genconf->cacertfile, // insecure flag
+#ifdef DODBG
+			   1, // debug
+#else
+			   0, // debug
+#endif
+			   NULL, // quitfn
+			   tlserrout, // erroutfn
+			   NULL // opaque
+		);
+	if (!s) {
+		// POLICY as almost certainly indicates TLS not configured
+		// right.
+		send_reply(opt, *net, NBD_REP_ERR_POLICY, 0, NULL);
+		err_nonfatal("Could not initialise a TLS session");
+		close(plainfd[0]);
+		close(plainfd[1]);
+		return;
+	}
+
+	send_reply(opt, *net, NBD_REP_ACK, 0, NULL);
+
+	if (set_nonblocking(plainfd[0], 0) <0 ||
+	    set_nonblocking(plainfd[1], 0) <0 ||
+	    set_nonblocking(*net, 0) <0) {
+		send_reply(opt, *net, NBD_REP_ERR_INVALID, 0, NULL);
+		err("Could not set socket options");
+		close(plainfd[0]);
+		close(plainfd[1]);
+		return;
+	}
+
+	/* BUG: this makes a TLS connection count like two normal connections
+	 * as far as maxconnections is concerned
+	 */
+	ret = spawn_child();
+	if (ret < 0)
+		err("Could not fork");
+	else if (ret == 0) {
+		// we are the child
+		signal (SIGPIPE, SIG_IGN);
+		close(plainfd[1]);
+		tlssession_mainloop(*net, plainfd[0], s);
+		close(*net);
+		close(plainfd[0]);
+		exit(0);
+	}
+	close(plainfd[0]);
+	// don't close TLS fd here because the caller uses it
+	// to get address information of the peer. Caller
+	// will close this.
+
+	*tlsfd = *net; /* keep the TLS fd handy */
+	*net = plainfd[1]; /* use the decrypted FD from now on */
+	return;
+
+#else
+
+	send_reply(opt, *net, NBD_REP_ERR_UNSUP, 0, NULL);
+	return;
+#endif
+}
+
 /**
  * Do the initial negotiation.
  *
  * @param client The client we're negotiating with.
+ * @param genconf The configuration
  **/
-CLIENT* negotiate(int net, GArray* servers) {
+CLIENT* negotiate(int net, GArray* servers, struct generic_conf *genconf) {
 	uint16_t smallflags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
 	uint64_t magic;
 	uint32_t cflags = 0;
 	uint32_t opt;
+	int tlsfd = -1;
 
 	assert(servers != NULL);
 	if (write(net, INIT_PASSWD, 8) < 0)
@@ -1357,7 +1477,7 @@ CLIENT* negotiate(int net, GArray* servers) {
 		magic = ntohll(magic);
 		if(magic != opts_magic) {
 			err_nonfatal("Negotiation failed/5a: magic mismatch");
-			return NULL;
+			goto errorclose;
 		}
 		if (read(net, &opt, sizeof(opt)) < 0)
 			err_nonfatal("Negotiation failed/6: %m");
@@ -1367,10 +1487,13 @@ CLIENT* negotiate(int net, GArray* servers) {
 			// NBD_OPT_EXPORT_NAME must be the last
 			// selected option, so return from here
 			// if that is chosen.
-			return handle_export_name(opt, net, servers, cflags);
+			return handle_export_name(opt, net, servers, cflags, tlsfd);
 			break;
 		case NBD_OPT_LIST:
 			handle_list(opt, net, servers, cflags);
+			break;
+		case NBD_OPT_STARTTLS:
+			handle_starttls(opt, &net, &tlsfd, servers, cflags, genconf);
 			break;
 		case NBD_OPT_ABORT:
 			// handled below
@@ -1382,9 +1505,15 @@ CLIENT* negotiate(int net, GArray* servers) {
 	} while((opt != NBD_OPT_EXPORT_NAME) && (opt != NBD_OPT_ABORT));
 	if(opt == NBD_OPT_ABORT) {
 		err_nonfatal("Session terminated by client");
-		return NULL;
+		goto errorclose;
 	}
 	err_nonfatal("Weird things happened: reached end of negotiation without success");
+errorclose:
+	// the caller will close the FD it passed in. If TLS has been negotiated
+	// we need to close the plain FD (which is now 'net'); this will be different
+	// to the caller's 'net'.
+	if (tlsfd >= 0)
+		close(net); // called will close tlsfd (his 'net')
 	return NULL;
 }
 
@@ -2152,13 +2281,11 @@ socket_accept(const int sock)
 }
 
 static void
-handle_modern_connection(GArray *const servers, const int sock)
+handle_modern_connection(GArray *const servers, const int sock, struct generic_conf *genconf)
 {
         int net;
         pid_t pid;
         CLIENT *client = NULL;
-        int sock_flags_old;
-        int sock_flags_new;
 
         net = socket_accept(sock);
         if (net < 0)
@@ -2177,7 +2304,8 @@ handle_modern_connection(GArray *const servers, const int sock)
                 /* Child just continues. */
         }
 
-        client = negotiate(net, servers);
+
+        client = negotiate(net, servers, genconf);
         if (!client) {
                 msg(LOG_ERR, "Modern initial negotiation failed");
                 goto handler_err;
@@ -2190,18 +2318,10 @@ handle_modern_connection(GArray *const servers, const int sock)
                 goto handler_err;
         }
 
-        sock_flags_old = fcntl(net, F_GETFL, 0);
-        if (sock_flags_old == -1) {
-                msg(LOG_ERR, "Failed to get socket flags");
-                goto handler_err;
-        }
-
-        sock_flags_new = sock_flags_old & ~O_NONBLOCK;
-        if (sock_flags_new != sock_flags_old &&
-            fcntl(net, F_SETFL, sock_flags_new) == -1) {
-                msg(LOG_ERR, "Failed to set socket to blocking mode");
-                goto handler_err;
-        }
+	if (set_nonblocking(client->net, 0) < 0) {
+		msg(LOG_ERR, "Failed to set socket to blocking mode");
+		goto handler_err;
+	}
 
         if (set_peername(net, client)) {
                 msg(LOG_ERR, "Failed to set peername");
@@ -2241,11 +2361,16 @@ handle_modern_connection(GArray *const servers, const int sock)
 
         msg(LOG_INFO, "Starting to serve");
         serveconnection(client);
+	close (net);
+	if (client->net != net) {
+		close (client->net);
+	}
         exit(EXIT_SUCCESS);
 
 handler_err:
-        g_free(client);
-        close(net);
+	close (net);
+	if (client && client->net != net)
+		close (client->net);
 
         if (!dontfork) {
                 exit(EXIT_FAILURE);
@@ -2317,7 +2442,7 @@ out:
 /**
  * Loop through the available servers, and serve them. Never returns.
  **/
-void serveloop(GArray* servers) {
+void serveloop(GArray* servers, struct generic_conf *genconf) {
 	int i;
 	int max;
 	fd_set mset;
@@ -2426,12 +2551,12 @@ void serveloop(GArray* servers) {
 					continue;
 				}
 
-				handle_modern_connection(servers, sock);
+				handle_modern_connection(servers, sock, genconf);
 			}
 		}
 	}
 }
-void serveloop(GArray* servers) G_GNUC_NORETURN;
+void serveloop(GArray* servers, struct generic_conf *genconf) G_GNUC_NORETURN;
 
 /**
  * Set server socket options.
@@ -2772,6 +2897,10 @@ int main(int argc, char *argv[]) {
 	GError *gerr=NULL;
 	struct generic_conf genconf;
 
+#ifdef WITH_GNUTLS
+	tlssession_init();
+#endif
+
 	memset(&genconf, 0, sizeof(struct generic_conf));
 
 	if (sizeof( struct nbd_request )!=28) {
@@ -2836,5 +2965,5 @@ int main(int argc, char *argv[]) {
 			genconf.unixsock);
 	dousers(genconf.user, genconf.group);
 
-	serveloop(servers);
+	serveloop(servers, &genconf);
 }
