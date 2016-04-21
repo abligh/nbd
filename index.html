@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="description" content="Nbd : Network Block Device">
+
+    <link rel="stylesheet" type="text/css" media="screen" href="stylesheets/stylesheet.css">
+
+    <title>Nbd</title>
+  </head>
+
+  <body>
+
+    <!-- HEADER -->
+    <div id="header_wrap" class="outer">
+        <header class="inner">
+          <a id="forkme_banner" href="https://github.com/abligh/nbd">View on GitHub</a>
+
+          <h1 id="project_title">Nbd</h1>
+          <h2 id="project_tagline">Network Block Device</h2>
+
+            <section id="downloads">
+              <a class="zip_download_link" href="https://github.com/abligh/nbd/zipball/master">Download this project as a .zip file</a>
+              <a class="tar_download_link" href="https://github.com/abligh/nbd/tarball/master">Download this project as a tar.gz file</a>
+            </section>
+        </header>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div id="main_content_wrap" class="outer">
+      <section id="main_content" class="inner">
+        <h1>
+<a id="network-block-device-tcp-version" class="anchor" href="#network-block-device-tcp-version" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Network Block Device (TCP version)</h1>
+
+<p>What is it: With this compiled into your kernel, Linux can use a remote server as one of its block devices. Every time the client computer wants to read <code>/dev/nbd0</code>, it will send a request to the server via TCP, which will reply with the data requested. This can be used for stations with low disk space (or even diskless - if you use an <code>initrd</code>) to borrow disk space from other computers. Unlike NFS, it is possible to put any file system on it. But (also unlike NFS), if someone has mounted NBD read/write, you must assure that no one else will have it mounted.</p>
+
+<p>Current state: It currently works. Network block device is pretty stable. It was originally thought that it is impossible to swap over TCP; this turned out not to be true. However, to avoid deadlocks, you will need at least <a href="http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=7f338fe4540b1d0600b02314c7d885fd358e9eca">Linux 3.6</a>.</p>
+
+<p>It is possible to use NBD as the block device counterpart of FUSE, to implement the block device's reads and writes in user space. To make this easer, recent versions of NBD (3.10 and above) implement NBD over a Unix Domain Socket, too.</p>
+
+<p>If you're interested in the technical side of how NBD works, please see the <a href="https://github.com/yoe/nbd/blob/master/doc/proto.md">protocol documentation</a>.</p>
+
+<p>Comments and help about the tools is always appreciated; if you're willing to help out, please subscribe to the <a href="http://lists.sourceforge.net/mailman/listinfo/nbd-general">mailing-list</a>, and share your thoughts.</p>
+
+<h1>
+<a id="links" class="anchor" href="#links" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Links</h1>
+
+<ul>
+<li><a href="https://github.com/yoe/nbd">Github repository</a></li>
+<li>In September 2006, <a href="http://www.linux-magazine.com/">Linux Magazine</a> featured an article about network block devices (not just NBD, but other implementations as well). This is available for <a href="http://w3.linux-magazine.com/issue/70/Network_Block_Devices.pdf">download</a> from their website.</li>
+<li>Another writeup was done by <a href="http://www.linux-mag.com/">that other Linux Magazine</a> in October 2008. It's available straight from <a href="http://www.linux-mag.com/id/7118">their website</a>.</li>
+</ul>
+
+<h2>
+<a id="nbd-on-other-platforms" class="anchor" href="#nbd-on-other-platforms" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>NBD on other platforms</h2>
+
+<p>Besides Linux, the authors have knowledge of NBD client support on the following platforms:</p>
+
+<ul>
+<li>The Hurd: an <a href="http://lists.debian.org/debian-hurd/2001/09/msg00174.html">nbd translator</a> was written by Rolan McGrath on September 28th, 2001</li>
+<li>Plan 9: Christoph Lohmann informed us on June 1st, 2006, that it can mount NBD exports with <a href="http://www.r-36.net/nbdfs.html">some extra code</a>
+</li>
+<li>BSD-like systems: On SourceForge, the project <a href="http://sf.net/projects/nvd">nvd</a> intends to implement NBD for BSD systems. They're not ready yet, however.</li>
+</ul>
+
+<p>The <em>server</em> should theoretically work on every POSIX-compliant platform out there (provided glib is supported on that platform). If it doesn't, that's a bug and I want to know about it; if you encounter such problems, please send a mail to the mailinglist.</p>
+      </section>
+    </div>
+
+    <!-- FOOTER  -->
+    <div id="footer_wrap" class="outer">
+      <footer class="inner">
+        <p class="copyright">Nbd maintained by <a href="https://github.com/abligh">abligh</a></p>
+        <p>Published with <a href="https://pages.github.com">GitHub Pages</a></p>
+      </footer>
+    </div>
+
+    
+
+  </body>
+</html>
