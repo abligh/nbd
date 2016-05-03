@@ -208,6 +208,15 @@ GArray* modernsocks;	  /**< Sockets for the modern handler. Not used
 bool logged_oversized=false;  /**< whether we logged oversized requests already */
 
 /**
+ * Type of child
+ */
+typedef enum {
+	CHILD_UNKNOWN,		/**< Don't know */
+	CHILD_NBDSERVER,	/**< NBD server */
+	CHILD_TLSPROXY,		/**< TLS proxy */
+} child_t;
+
+/**
  * Type of configuration file values
  **/
 typedef enum {
@@ -250,7 +259,7 @@ struct generic_conf {
 	gint threads;		/**< maximum number of parallel threads we want to run */
 };
 
-static pid_t spawn_child();
+static pid_t spawn_child(child_t type);
 
 /**
  * Translate a command name into human readable form
@@ -862,9 +871,23 @@ static void sigchld_handler(const int s G_GNUC_UNUSED) {
  * will happen next.
  **/
 void killchild(gpointer key, gpointer value, gpointer user_data) {
-	pid_t *pid=value;
+	pid_t *pid=key;
 
 	kill(*pid, SIGTERM);
+}
+
+/**
+ * Count servers. Called when connectiong
+ *
+ * @param key the key
+ * @param value the value corresponding to the above key
+ * @param user_data a pointer to the value to increment
+ **/
+void countservers(gpointer key, gpointer value, gpointer user_data) {
+	child_t *type=value;
+	int *count=user_data;
+	if (*type == CHILD_NBDSERVER)
+		(*count)++;
 }
 
 /**
@@ -1411,10 +1434,7 @@ static void handle_starttls(uint32_t opt, int *net, int *tlsfd, GArray* servers,
 		return;
 	}
 
-	/* BUG: this makes a TLS connection count like two normal connections
-	 * as far as maxconnections is concerned
-	 */
-	ret = spawn_child();
+	ret = spawn_child(CHILD_TLSPROXY);
 	if (ret < 0)
 		err("Could not fork");
 	else if (ret == 0) {
@@ -2229,8 +2249,16 @@ void destroy_pid_t(gpointer data) {
 	g_free(data);
 }
 
+/**
+ * Destroy child_t*
+ * @param data a pointer to child_t which should be freed
+ **/
+void destroy_child_t(gpointer data) {
+	g_free(data);
+}
+
 static pid_t
-spawn_child()
+spawn_child(child_t type)
 {
         pid_t pid;
         sigset_t newset;
@@ -2247,10 +2275,13 @@ spawn_child()
         }
         if (pid > 0) { /* Parent */
                 pid_t *pidp;
+		child_t *typep;
 
                 pidp = g_malloc(sizeof(pid_t));
                 *pidp = pid;
-                g_hash_table_insert(children, pidp, pidp);
+		typep = g_malloc(sizeof(child_t));
+		*typep = type;
+                g_hash_table_insert(children, pidp, typep);
                 goto out;
         }
         /* Child */
@@ -2292,7 +2323,7 @@ handle_modern_connection(GArray *const servers, const int sock, struct generic_c
                 return;
 
         if (!dontfork) {
-                pid = spawn_child();
+                pid = spawn_child(CHILD_NBDSERVER);
                 if (pid) {
                         if (pid > 0)
                                 msg(LOG_INFO, "Spawned a child process");
@@ -2311,11 +2342,14 @@ handle_modern_connection(GArray *const servers, const int sock, struct generic_c
                 goto handler_err;
         }
 
-        if (client->server->max_connections > 0 &&
-           g_hash_table_size(children) >= client->server->max_connections) {
-                msg(LOG_ERR, "Max connections (%d) reached",
-                    client->server->max_connections);
-                goto handler_err;
+        if (client->server->max_connections > 0) {
+		int currentservers = 0;
+		g_hash_table_foreach(children, countservers, &currentservers);
+		if (currentservers >= client->server->max_connections) {
+			msg(LOG_ERR, "Max connections (%d) reached",
+			    client->server->max_connections);
+			goto handler_err;
+		}
         }
 
 	if (set_nonblocking(client->net, 0) < 0) {
@@ -2495,7 +2529,7 @@ void serveloop(GArray* servers, struct generic_conf *genconf) {
 
 		if (is_sigchld_caught) {
 			int status;
-			int* i;
+			child_t* i;
 			pid_t pid;
 
 			is_sigchld_caught = 0;
@@ -2508,7 +2542,7 @@ void serveloop(GArray* servers, struct generic_conf *genconf) {
 				if (!i) {
 					msg(LOG_INFO, "SIGCHLD received for an unknown child with PID %ld", (long)pid);
 				} else {
-					DEBUG("Removing %d from the list of children", pid);
+					DEBUG("Removing %d from the list of children (type %d)", pid, *i);
 					g_hash_table_remove(children, &pid);
 				}
 			}
@@ -2769,7 +2803,7 @@ void setup_servers(GArray *const servers, const gchar *const modernaddr,
 			exit(EXIT_FAILURE);
 		}
 	}
-	children=g_hash_table_new_full(g_int_hash, g_int_equal, NULL, destroy_pid_t);
+	children=g_hash_table_new_full(g_int_hash, g_int_equal, destroy_pid_t, destroy_child_t);
 
 	sa.sa_handler = sigchld_handler;
 	sigemptyset(&sa.sa_mask);
